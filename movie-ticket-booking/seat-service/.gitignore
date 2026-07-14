@@ -1,0 +1,33 @@
+# Node
+node_modules/
+npm-debug.log
+package-lock.json
+yarn.lock
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Build
+dist/
+build/
+
+# MongoDB data
+data/
+dump/
+
+# Kafka data
+kafka-logs/
+zookeeper-data/
+
+# Docker volumes
+*.tar

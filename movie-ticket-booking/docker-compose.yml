@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  booking-mongo:
+    image: mongo:8.0
+    container_name: booking-mongo
+    restart: always
+    command: mongod --replSet rs0 --bind_ip_all
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: booking_db
+    volumes:
+      - booking_data:/data/db
+
+  payment-mongo:
+    image: mongo:8.0
+    container_name: payment-mongo
+    restart: always
+    command: mongod --replSet rs0 --bind_ip_all
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_DATABASE: payment_db
+    volumes:
+      - payment_data:/data/db
+
+  seat-mongo:
+    image: mongo:8.0
+    container_name: seat-mongo
+    restart: always
+    command: mongod --replSet rs0 --bind_ip_all
+    ports:
+      - "27019:27017"
+    environment:
+      MONGO_INITDB_DATABASE: seat_db
+    volumes:
+      - seat_data:/data/db
+
+  notification-mongo:
+    image: mongo:8.0
+    container_name: notification-mongo
+    restart: always
+    command: mongod --replSet rs0 --bind_ip_all
+    ports:
+      - "27020:27017"
+    environment:
+      MONGO_INITDB_DATABASE: notification_db
+    volumes:
+      - notification_data:/data/db
+
+volumes:
+  booking_data:
+  payment_data:
+  seat_data:
+  notification_data:
