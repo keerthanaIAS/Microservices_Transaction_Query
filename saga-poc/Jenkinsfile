@@ -34,7 +34,6 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 sh '''
-                    mkdir -p logs
                     cd saga-poc/booking-service && npm install
                     cd ../payment-service && npm install
                 '''
@@ -76,47 +75,12 @@ pipeline {
                         docker tag payment-service:${DOCKER_TAG} ${DOCKER_USERNAME}/payment-service:${DOCKER_TAG}
                         docker push ${DOCKER_USERNAME}/payment-service:latest
                         docker push ${DOCKER_USERNAME}/payment-service:${DOCKER_TAG}
+                        
+                        echo "✅ Images pushed to Docker Hub!"
+                        echo "📦 https://hub.docker.com/r/${DOCKER_USERNAME}/booking-service"
+                        echo "📦 https://hub.docker.com/r/${DOCKER_USERNAME}/payment-service"
                     '''
                 }
-            }
-        }
-        
-        stage('Start Services') {
-            steps {
-                sh '''
-                    cd saga-poc
-                    
-                    # Start Docker
-                    docker-compose up -d
-                    sleep 20
-                    
-                    # Start Node services with logs directory
-                    mkdir -p logs
-                    
-                    cd booking-service
-                    nohup npm start > ../logs/booking-service.log 2>&1 &
-                    cd ..
-                    
-                    cd payment-service
-                    nohup npm start > ../logs/payment-service.log 2>&1 &
-                    cd ..
-                    
-                    sleep 30
-                '''
-            }
-        }
-        
-        stage('Test') {
-            steps {
-                sh '''
-                    curl -s -o /dev/null -w "Booking: %{http_code}\n" http://localhost:3001/api/bookings || echo "Booking not ready"
-                    curl -s -o /dev/null -w "Payment: %{http_code}\n" http://localhost:3002/api/payments || echo "Payment not ready"
-                    
-                    echo "Creating test booking..."
-                    curl -X POST http://localhost:3001/api/bookings \
-                        -H "Content-Type: application/json" \
-                        -d '{"userId":"test","amount":99.99}'
-                '''
             }
         }
     }
@@ -124,17 +88,9 @@ pipeline {
     post {
         success {
             echo '🎉 Pipeline SUCCESS! Images pushed to Docker Hub!'
-            echo '📦 https://hub.docker.com/r/keerthanalp/booking-service'
-            echo '📦 https://hub.docker.com/r/keerthanalp/payment-service'
         }
         failure {
             echo '❌ Pipeline failed!'
-        }
-        always {
-            sh '''
-                kill $(cat logs/*.pid 2>/dev/null) 2>/dev/null || true
-                rm -f logs/*.pid 2>/dev/null || true
-            '''
         }
     }
 }
