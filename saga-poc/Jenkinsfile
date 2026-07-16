@@ -5,6 +5,17 @@ pipeline {
         NODEJS_HOME = tool name: 'NodeJS-18', type: 'nodejs'
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${env.NODEJS_HOME}/bin:${env.PATH}"
         DOCKER_HOST = "unix:///var/run/docker.sock"
+        
+        // Docker Hub configuration
+        DOCKER_REGISTRY = 'docker.io'
+        DOCKER_IMAGE_BOOKING = "${env.DOCKER_REGISTRY}/${env.DOCKER_USERNAME}/booking-service"
+        DOCKER_IMAGE_PAYMENT = "${env.DOCKER_REGISTRY}/${env.DOCKER_USERNAME}/payment-service"
+        DOCKER_TAG = "${env.BUILD_ID}"
+        DOCKER_LATEST = "latest"
+        
+        // Kubernetes configuration
+        KUBECONFIG = '/Users/keerthana/.kube/config'
+        K8S_NAMESPACE = 'saga'
     }
     
     options {
@@ -18,7 +29,11 @@ pipeline {
             steps {
                 echo '📦 Checking out code...'
                 checkout scm
-                sh 'pwd && ls -la'
+                sh '''
+                    echo "Current directory: $(pwd)"
+                    echo "Files:"
+                    ls -la
+                '''
             }
         }
         
@@ -37,6 +52,9 @@ pipeline {
                     
                     echo "Docker Compose version:"
                     docker-compose --version || echo "docker-compose not found"
+                    
+                    echo "kubectl version:"
+                    kubectl version --client || echo "kubectl not found"
                 '''
             }
         }
@@ -45,9 +63,7 @@ pipeline {
             steps {
                 echo '📦 Installing dependencies...'
                 sh '''
-                    # Create logs directory at root
                     mkdir -p logs
-                    
                     cd saga-poc
                     
                     echo "Installing booking-service dependencies..."
@@ -61,78 +77,98 @@ pipeline {
             }
         }
         
-        stage('Check Docker Status') {
+        stage('Build Docker Images') {
             steps {
-                echo '🐳 Checking Docker containers...'
+                echo '🐳 Building Docker images...'
+                script {
+                    // Build booking service image
+                    sh '''
+                        cd saga-poc/booking-service
+                        docker build -t ${DOCKER_IMAGE_BOOKING}:${DOCKER_TAG} .
+                        docker tag ${DOCKER_IMAGE_BOOKING}:${DOCKER_TAG} ${DOCKER_IMAGE_BOOKING}:${DOCKER_LATEST}
+                        cd ../..
+                    '''
+                    
+                    // Build payment service image
+                    sh '''
+                        cd saga-poc/payment-service
+                        docker build -t ${DOCKER_IMAGE_PAYMENT}:${DOCKER_TAG} .
+                        docker tag ${DOCKER_IMAGE_PAYMENT}:${DOCKER_TAG} ${DOCKER_IMAGE_PAYMENT}:${DOCKER_LATEST}
+                        cd ../..
+                    '''
+                    
+                    echo "✅ Docker images built successfully"
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                echo '📤 Pushing images to Docker Hub...'
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub-credentials',
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        echo "Logging in to Docker Hub..."
+                        echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
+                        
+                        echo "Pushing booking-service..."
+                        docker push ${DOCKER_IMAGE_BOOKING}:${DOCKER_TAG}
+                        docker push ${DOCKER_IMAGE_BOOKING}:${DOCKER_LATEST}
+                        
+                        echo "Pushing payment-service..."
+                        docker push ${DOCKER_IMAGE_PAYMENT}:${DOCKER_TAG}
+                        docker push ${DOCKER_IMAGE_PAYMENT}:${DOCKER_LATEST}
+                        
+                        echo "✅ Images pushed to Docker Hub"
+                        
+                        # Update Kubernetes YAML with correct image
+                        sed -i "s|YOUR_DOCKER_USERNAME|${DOCKER_USERNAME}|g" saga-poc/k8s/*.yaml
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            steps {
+                echo '☸️ Deploying to Kubernetes...'
                 sh '''
-                    echo "Running containers:"
-                    docker ps
+                    # Create namespace if it doesn't exist
+                    kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
                     
-                    echo ""
-                    echo "Checking MongoDB..."
-                    docker exec mongo mongosh --port 27017 --eval "db.adminCommand('ping')" || echo "⚠️ MongoDB not ready"
+                    # Apply all Kubernetes manifests
+                    echo "Applying Kubernetes configurations..."
+                    kubectl apply -f saga-poc/k8s/namespace.yaml
+                    kubectl apply -f saga-poc/k8s/booking-service.yaml
+                    kubectl apply -f saga-poc/k8s/payment-service.yaml
                     
-                    echo ""
-                    echo "Checking Kafka..."
-                    docker exec kafka /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092 || echo "⚠️ Kafka not ready"
+                    # Wait for deployments to be ready
+                    echo "Waiting for deployments to be ready..."
+                    kubectl rollout status deployment/booking-service -n ${K8S_NAMESPACE}
+                    kubectl rollout status deployment/payment-service -n ${K8S_NAMESPACE}
+                    
+                    # Get service status
+                    echo "Services status:"
+                    kubectl get pods,svc,deploy -n ${K8S_NAMESPACE}
                 '''
             }
         }
         
-        stage('Create Kafka Topics') {
+        stage('Local Testing (Docker Compose)') {
             steps {
-                echo '📨 Creating Kafka topics...'
+                echo '🚀 Starting local services for testing...'
                 sh '''
+                    # Start services using docker-compose
                     cd saga-poc
-                    
-                    echo "Creating booking-events topic..."
-                    docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --topic booking-events \
-                        --bootstrap-server localhost:9092 \
-                        --partitions 3 --replication-factor 1 || echo "Topic may already exist"
-                    
-                    echo "Creating payment-events topic..."
-                    docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --topic payment-events \
-                        --bootstrap-server localhost:9092 \
-                        --partitions 3 --replication-factor 1 || echo "Topic may already exist"
-                    
-                    echo "Available topics:"
-                    docker exec kafka /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
-                '''
-            }
-        }
-        
-        stage('Start Services') {
-            steps {
-                echo '🚀 Starting microservices...'
-                sh '''
-                    # Kill any existing node processes
-                    pkill -f "node.*booking-service" || true
-                    pkill -f "node.*payment-service" || true
-                    
-                    # Create logs directory if it doesn't exist
-                    mkdir -p logs
-                    
-                    cd saga-poc
-                    
-                    # Start booking service
-                    echo "Starting Booking Service on port 3001..."
-                    cd booking-service
-                    nohup npm start > ../../logs/booking-service.log 2>&1 &
-                    echo $! > ../../logs/booking-service.pid
-                    cd ..
-                    
-                    # Start payment service
-                    echo "Starting Payment Service on port 3002..."
-                    cd payment-service
-                    nohup npm start > ../../logs/payment-service.log 2>&1 &
-                    echo $! > ../../logs/payment-service.pid
-                    cd ..
+                    docker-compose up -d
                     
                     echo "⏳ Waiting for services to start (30 seconds)..."
                     sleep 30
                     
-                    echo "Running Node processes:"
-                    ps aux | grep node | grep -v grep || echo "No node processes found"
+                    echo "Running containers:"
+                    docker ps
                 '''
             }
         }
@@ -177,26 +213,28 @@ pipeline {
             }
         }
         
-        stage('Show Service Logs') {
+        stage('Verify Kubernetes Deployment') {
             steps {
-                echo '📋 Showing service logs...'
+                echo '☸️ Verifying Kubernetes deployment...'
                 sh '''
-                    echo "===== Booking Service Logs (last 20 lines) ====="
-                    tail -20 logs/booking-service.log 2>/dev/null || echo "No logs found"
-                    echo ""
+                    echo "Checking Kubernetes pods:"
+                    kubectl get pods -n ${K8S_NAMESPACE}
                     
-                    echo "===== Payment Service Logs (last 20 lines) ====="
-                    tail -20 logs/payment-service.log 2>/dev/null || echo "No logs found"
-                '''
-            }
-        }
-        
-        stage('Show Docker Status') {
-            steps {
-                echo '🐳 Final Docker status...'
-                sh '''
-                    echo "Running containers:"
-                    docker ps
+                    echo ""
+                    echo "Checking Kubernetes services:"
+                    kubectl get svc -n ${K8S_NAMESPACE}
+                    
+                    echo ""
+                    echo "Checking Kubernetes deployments:"
+                    kubectl get deployments -n ${K8S_NAMESPACE}
+                    
+                    echo ""
+                    echo "Booking Service logs:"
+                    kubectl logs -n ${K8S_NAMESPACE} deployment/booking-service --tail=10
+                    
+                    echo ""
+                    echo "Payment Service logs:"
+                    kubectl logs -n ${K8S_NAMESPACE} deployment/payment-service --tail=10
                 '''
             }
         }
@@ -206,25 +244,23 @@ pipeline {
         success {
             echo '🎉 Pipeline completed successfully!'
             echo ''
-            echo '✅ Services are running:'
-            echo '  - Booking Service: http://localhost:3001'
-            echo '  - Payment Service: http://localhost:3002'
-            echo '  - MongoDB UI: http://localhost:8081'
+            echo '✅ Docker images pushed to Docker Hub'
+            echo '✅ Services deployed to Kubernetes'
+            echo '✅ Local services running'
             echo ''
-            echo '📝 Test commands:'
-            echo '  curl http://localhost:3001/api/bookings'
-            echo '  curl http://localhost:3002/api/payments'
+            echo '📊 Services:'
+            echo '  - Booking Service (Local): http://localhost:3001'
+            echo '  - Payment Service (Local): http://localhost:3002'
+            echo '  - MongoDB UI (Local): http://localhost:8081'
+            echo ''
+            echo '📊 Kubernetes (if running):'
+            echo '  - kubectl get pods -n saga'
+            echo '  - kubectl get svc -n saga'
         }
         
         failure {
             echo '❌ Pipeline failed!'
             echo '🔍 Check the logs above for errors'
-            echo ''
-            echo '📋 Debug commands:'
-            echo '  cat logs/booking-service.log'
-            echo '  cat logs/payment-service.log'
-            echo '  docker logs mongo'
-            echo '  docker logs kafka'
         }
         
         always {

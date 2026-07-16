@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: saga
+  labels:
+    app: payment-service
+spec:
+  selector:
+    app: payment-service
+  ports:
+    - port: 3002
+      targetPort: 3002
+      name: http
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: saga
+  labels:
+    app: payment-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+    spec:
+      containers:
+        - name: payment-service
+          image: YOUR_DOCKER_USERNAME/payment-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3002
+          env:
+            - name: PORT
+              value: "3002"
+            - name: MONGODB_URI
+              value: "mongodb://mongo-service:27017"
+            - name: MONGODB_DB
+              value: "saga_db"
+            - name: KAFKA_BROKER
+              value: "kafka-service:9092"
+            - name: KAFKA_CLIENT_ID
+              value: "payment-service"
+            - name: KAFKA_GROUP_ID
+              value: "payment-group"
+            - name: FAILURE_RATE
+              value: "0.4"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /api/payments
+              port: 3002
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/payments
+              port: 3002
+            initialDelaySeconds: 20
+            periodSeconds: 5
