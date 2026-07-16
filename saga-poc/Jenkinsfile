@@ -114,17 +114,40 @@ pipeline {
         
         stage('Start Local Services') {
             steps {
-                echo '🚀 Starting local services with docker-compose...'
+                echo '🚀 Starting local services...'
                 sh '''
                     cd saga-poc
-                    docker-compose down || true
+                    
+                    # Start Docker infrastructure
+                    echo "Starting Docker infrastructure..."
                     docker-compose up -d
+                    
+                    echo "⏳ Waiting for Docker services (20 seconds)..."
+                    sleep 20
+                    
+                    # Start booking service
+                    echo "Starting Booking Service on port 3001..."
+                    cd booking-service
+                    nohup npm start > ../logs/booking-service.log 2>&1 &
+                    echo $! > ../logs/booking-service.pid
+                    cd ..
+                    
+                    # Start payment service
+                    echo "Starting Payment Service on port 3002..."
+                    cd payment-service
+                    nohup npm start > ../logs/payment-service.log 2>&1 &
+                    echo $! > ../logs/payment-service.pid
+                    cd ..
                     
                     echo "⏳ Waiting for services to start (30 seconds)..."
                     sleep 30
                     
                     echo "Running containers:"
                     docker ps
+                    
+                    echo ""
+                    echo "Node processes:"
+                    ps aux | grep node | grep -v grep || echo "No node processes"
                 '''
             }
         }
@@ -191,6 +214,14 @@ pipeline {
         failure {
             echo '❌ Pipeline failed!'
             echo 'Check logs above for errors'
+        }
+        
+        always {
+            echo '🧹 Cleaning up...'
+            sh '''
+                kill $(cat logs/*.pid 2>/dev/null) 2>/dev/null || true
+                rm -f logs/*.pid 2>/dev/null || true
+            '''
         }
     }
 }
