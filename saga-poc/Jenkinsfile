@@ -130,9 +130,6 @@ pipeline {
                     passwordVariable: 'DOCKER_PASSWORD'
                 )]) {
                     sh '''
-                        # Update YAML with correct username
-                        sed -i "s|YOUR_DOCKER_USERNAME|${DOCKER_USERNAME}|g" saga-poc/k8s/*.yaml
-                        
                         # Create namespace
                         kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
                         
