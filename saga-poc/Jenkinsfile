@@ -2,7 +2,6 @@ pipeline {
     agent any
     
     environment {
-        // Use NodeJS from Jenkins plugin
         NODEJS_HOME = tool name: 'NodeJS-18', type: 'nodejs'
         PATH = "${env.NODEJS_HOME}/bin:${env.PATH}"
     }
@@ -16,10 +15,11 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                echo '📦 Code is already available (pasted script)'
+                echo '📦 Checking out code...'
+                checkout scm
                 sh '''
                     echo "Current directory: $(pwd)"
-                    echo "Files in workspace:"
+                    echo "Files:"
                     ls -la
                 '''
             }
@@ -51,37 +51,20 @@ pipeline {
                     # Create logs directory
                     mkdir -p logs
                     
-                    # Check if directories exist
-                    echo "Checking project structure..."
-                    ls -la
+                    # Go to saga-poc folder where your code is
+                    cd saga-poc
                     
-                    # Install booking service
-                    if [ -d "booking-service" ] && [ -f "booking-service/package.json" ]; then
-                        echo "Installing booking-service dependencies..."
-                        cd booking-service
-                        npm install
-                        cd ..
-                    else
-                        echo "❌ booking-service/package.json not found!"
-                        echo "Current directory contents:"
-                        ls -la
-                        exit 1
-                    fi
+                    echo "Installing booking-service dependencies..."
+                    cd booking-service
+                    npm install
+                    cd ..
                     
-                    # Install payment service
-                    if [ -d "payment-service" ] && [ -f "payment-service/package.json" ]; then
-                        echo "Installing payment-service dependencies..."
-                        cd payment-service
-                        npm install
-                        cd ..
-                    else
-                        echo "❌ payment-service/package.json not found!"
-                        echo "Current directory contents:"
-                        ls -la
-                        exit 1
-                    fi
+                    echo "Installing payment-service dependencies..."
+                    cd payment-service
+                    npm install
+                    cd ..
                     
-                    echo "✅ All dependencies installed successfully"
+                    echo "✅ Dependencies installed"
                 '''
             }
         }
@@ -108,6 +91,8 @@ pipeline {
             steps {
                 echo '📨 Creating Kafka topics...'
                 sh '''
+                    cd saga-poc
+                    
                     echo "Creating booking-events topic..."
                     docker exec kafka kafka-topics --create --topic booking-events \
                         --bootstrap-server localhost:9092 \
@@ -132,6 +117,8 @@ pipeline {
                     echo "Cleaning up old processes..."
                     pkill -f "node.*booking-service" || true
                     pkill -f "node.*payment-service" || true
+                    
+                    cd saga-poc
                     
                     # Start booking service
                     echo "Starting Booking Service on port 3001..."
@@ -200,6 +187,8 @@ pipeline {
             steps {
                 echo '📋 Showing service logs...'
                 sh '''
+                    cd saga-poc
+                    
                     echo "===== Booking Service Logs (last 20 lines) ====="
                     tail -20 logs/booking-service.log 2>/dev/null || echo "No logs found"
                     echo ""
@@ -219,21 +208,11 @@ pipeline {
             echo '  - Booking Service: http://localhost:3001'
             echo '  - Payment Service: http://localhost:3002'
             echo '  - MongoDB UI: http://localhost:8081'
-            echo ''
-            echo '📝 Test commands:'
-            echo '  curl http://localhost:3001/api/bookings'
-            echo '  curl http://localhost:3002/api/payments'
         }
         
         failure {
             echo '❌ Pipeline failed!'
             echo '🔍 Check the logs above for errors'
-            echo ''
-            echo '📋 Debug commands:'
-            echo '  cat logs/booking-service.log'
-            echo '  cat logs/payment-service.log'
-            echo '  docker logs mongo'
-            echo '  docker logs kafka'
         }
     }
 }
