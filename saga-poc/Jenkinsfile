@@ -3,7 +3,9 @@ pipeline {
     
     environment {
         NODEJS_HOME = tool name: 'NodeJS-18', type: 'nodejs'
-        PATH = "${env.NODEJS_HOME}/bin:${env.PATH}"
+        // Add Docker path for Jenkins
+        PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${env.NODEJS_HOME}/bin:${env.PATH}"
+        DOCKER_HOST = "unix:///var/run/docker.sock"
     }
     
     options {
@@ -17,11 +19,7 @@ pipeline {
             steps {
                 echo '📦 Checking out code...'
                 checkout scm
-                sh '''
-                    echo "Current directory: $(pwd)"
-                    echo "Files:"
-                    ls -la
-                '''
+                sh 'pwd && ls -la'
             }
         }
         
@@ -38,8 +36,7 @@ pipeline {
                     echo "Docker version:"
                     docker --version || echo "Docker not found"
                     
-                    echo "Docker Compose version:"
-                    docker-compose --version || echo "Docker Compose not found"
+                    echo "PATH: $PATH"
                 '''
             }
         }
@@ -48,21 +45,14 @@ pipeline {
             steps {
                 echo '📦 Installing dependencies...'
                 sh '''
-                    # Create logs directory
                     mkdir -p logs
-                    
-                    # Go to saga-poc folder where your code is
                     cd saga-poc
                     
                     echo "Installing booking-service dependencies..."
-                    cd booking-service
-                    npm install
-                    cd ..
+                    cd booking-service && npm install && cd ..
                     
                     echo "Installing payment-service dependencies..."
-                    cd payment-service
-                    npm install
-                    cd ..
+                    cd payment-service && npm install && cd ..
                     
                     echo "✅ Dependencies installed"
                 '''
@@ -79,32 +69,6 @@ pipeline {
                     echo ""
                     echo "Checking MongoDB..."
                     docker exec mongo mongosh --port 27017 --eval "db.adminCommand('ping')" || echo "⚠️ MongoDB not ready"
-                    
-                    echo ""
-                    echo "Checking Kafka..."
-                    docker exec kafka kafka-topics --list --bootstrap-server localhost:9092 || echo "⚠️ Kafka not ready"
-                '''
-            }
-        }
-        
-        stage('Create Kafka Topics') {
-            steps {
-                echo '📨 Creating Kafka topics...'
-                sh '''
-                    cd saga-poc
-                    
-                    echo "Creating booking-events topic..."
-                    docker exec kafka kafka-topics --create --topic booking-events \
-                        --bootstrap-server localhost:9092 \
-                        --partitions 3 --replication-factor 1 || echo "Topic may already exist"
-                    
-                    echo "Creating payment-events topic..."
-                    docker exec kafka kafka-topics --create --topic payment-events \
-                        --bootstrap-server localhost:9092 \
-                        --partitions 3 --replication-factor 1 || echo "Topic may already exist"
-                    
-                    echo "Available topics:"
-                    docker exec kafka kafka-topics --list --bootstrap-server localhost:9092
                 '''
             }
         }
@@ -114,7 +78,6 @@ pipeline {
                 echo '🚀 Starting microservices...'
                 sh '''
                     # Kill any existing node processes
-                    echo "Cleaning up old processes..."
                     pkill -f "node.*booking-service" || true
                     pkill -f "node.*payment-service" || true
                     
@@ -137,8 +100,8 @@ pipeline {
                     echo "⏳ Waiting for services to start (25 seconds)..."
                     sleep 25
                     
-                    echo "Running Node processes:"
-                    ps aux | grep node | grep -v grep || echo "No node processes found"
+                    echo "Node processes:"
+                    ps aux | grep node | grep -v grep || echo "No node processes"
                 '''
             }
         }
