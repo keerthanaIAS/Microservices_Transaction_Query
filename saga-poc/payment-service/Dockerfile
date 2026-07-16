@@ -1,17 +1,26 @@
-# Use Node.js 18 Alpine image (smaller size)
-FROM node:18-alpine
+# Build stage
+FROM node:18-alpine AS builder
 
-# Set working directory
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install all dependencies (including dev)
+RUN npm ci
 
-# Copy application code
+# Copy source code
 COPY . .
+
+# Production stage
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy only necessary files from builder
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/index.js ./
 
 # Expose port
 EXPOSE 3002
@@ -26,4 +35,4 @@ ENV KAFKA_GROUP_ID=payment-group
 ENV FAILURE_RATE=0.4
 
 # Start the service
-CMD ["npm", "start"]
+CMD ["node", "index.js"]
