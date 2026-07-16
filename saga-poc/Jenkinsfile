@@ -3,7 +3,6 @@ pipeline {
     
     environment {
         NODEJS_HOME = tool name: 'NodeJS-18', type: 'nodejs'
-        // Add Docker path for Jenkins
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${env.NODEJS_HOME}/bin:${env.PATH}"
         DOCKER_HOST = "unix:///var/run/docker.sock"
     }
@@ -34,9 +33,10 @@ pipeline {
                     npm --version
                     
                     echo "Docker version:"
-                    docker --version || echo "Docker not found"
+                    docker --version
                     
-                    echo "PATH: $PATH"
+                    echo "Docker Compose version:"
+                    docker-compose --version || echo "docker-compose not found"
                 '''
             }
         }
@@ -45,7 +45,9 @@ pipeline {
             steps {
                 echo '📦 Installing dependencies...'
                 sh '''
+                    # Create logs directory at root
                     mkdir -p logs
+                    
                     cd saga-poc
                     
                     echo "Installing booking-service dependencies..."
@@ -69,6 +71,32 @@ pipeline {
                     echo ""
                     echo "Checking MongoDB..."
                     docker exec mongo mongosh --port 27017 --eval "db.adminCommand('ping')" || echo "⚠️ MongoDB not ready"
+                    
+                    echo ""
+                    echo "Checking Kafka..."
+                    docker exec kafka kafka-topics --list --bootstrap-server localhost:9092 || echo "⚠️ Kafka not ready"
+                '''
+            }
+        }
+        
+        stage('Create Kafka Topics') {
+            steps {
+                echo '📨 Creating Kafka topics...'
+                sh '''
+                    cd saga-poc
+                    
+                    echo "Creating booking-events topic..."
+                    docker exec kafka kafka-topics --create --topic booking-events \
+                        --bootstrap-server localhost:9092 \
+                        --partitions 3 --replication-factor 1 || echo "Topic may already exist"
+                    
+                    echo "Creating payment-events topic..."
+                    docker exec kafka kafka-topics --create --topic payment-events \
+                        --bootstrap-server localhost:9092 \
+                        --partitions 3 --replication-factor 1 || echo "Topic may already exist"
+                    
+                    echo "Available topics:"
+                    docker exec kafka kafka-topics --list --bootstrap-server localhost:9092
                 '''
             }
         }
@@ -81,27 +109,30 @@ pipeline {
                     pkill -f "node.*booking-service" || true
                     pkill -f "node.*payment-service" || true
                     
+                    # Create logs directory if it doesn't exist
+                    mkdir -p logs
+                    
                     cd saga-poc
                     
                     # Start booking service
                     echo "Starting Booking Service on port 3001..."
                     cd booking-service
-                    nohup npm start > ../logs/booking-service.log 2>&1 &
-                    echo $! > ../logs/booking-service.pid
+                    nohup npm start > ../../logs/booking-service.log 2>&1 &
+                    echo $! > ../../logs/booking-service.pid
                     cd ..
                     
                     # Start payment service
                     echo "Starting Payment Service on port 3002..."
                     cd payment-service
-                    nohup npm start > ../logs/payment-service.log 2>&1 &
-                    echo $! > ../logs/payment-service.pid
+                    nohup npm start > ../../logs/payment-service.log 2>&1 &
+                    echo $! > ../../logs/payment-service.pid
                     cd ..
                     
-                    echo "⏳ Waiting for services to start (25 seconds)..."
-                    sleep 25
+                    echo "⏳ Waiting for services to start (30 seconds)..."
+                    sleep 30
                     
-                    echo "Node processes:"
-                    ps aux | grep node | grep -v grep || echo "No node processes"
+                    echo "Running Node processes:"
+                    ps aux | grep node | grep -v grep || echo "No node processes found"
                 '''
             }
         }
@@ -111,13 +142,16 @@ pipeline {
                 echo '🏥 Running health checks...'
                 sh '''
                     echo "Checking Booking Service..."
-                    curl -s -o /dev/null -w "Booking Service: %{http_code}\n" http://localhost:3001/api/bookings || echo "❌ Booking service not ready"
+                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/api/bookings || echo "000")
+                    echo "Booking Service: $HTTP_CODE"
                     
                     echo "Checking Payment Service..."
-                    curl -s -o /dev/null -w "Payment Service: %{http_code}\n" http://localhost:3002/api/payments || echo "❌ Payment service not ready"
+                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3002/api/payments || echo "000")
+                    echo "Payment Service: $HTTP_CODE"
                     
                     echo "Checking MongoDB UI..."
-                    curl -s -o /dev/null -w "MongoDB UI: %{http_code}\n" http://localhost:8081 || echo "❌ MongoDB UI not ready"
+                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081 || echo "000")
+                    echo "MongoDB UI: $HTTP_CODE"
                 '''
             }
         }
@@ -150,14 +184,26 @@ pipeline {
             steps {
                 echo '📋 Showing service logs...'
                 sh '''
-                    cd saga-poc
-                    
                     echo "===== Booking Service Logs (last 20 lines) ====="
                     tail -20 logs/booking-service.log 2>/dev/null || echo "No logs found"
                     echo ""
                     
                     echo "===== Payment Service Logs (last 20 lines) ====="
                     tail -20 logs/payment-service.log 2>/dev/null || echo "No logs found"
+                '''
+            }
+        }
+        
+        stage('Show Docker Status') {
+            steps {
+                echo '🐳 Final Docker status...'
+                sh '''
+                    echo "Running containers:"
+                    docker ps
+                    echo ""
+                    echo "Docker Compose logs (last 10 lines):"
+                    cd saga-poc
+                    docker-compose logs --tail=10
                 '''
             }
         }
@@ -171,11 +217,30 @@ pipeline {
             echo '  - Booking Service: http://localhost:3001'
             echo '  - Payment Service: http://localhost:3002'
             echo '  - MongoDB UI: http://localhost:8081'
+            echo ''
+            echo '📝 Test commands:'
+            echo '  curl http://localhost:3001/api/bookings'
+            echo '  curl http://localhost:3002/api/payments'
         }
         
         failure {
             echo '❌ Pipeline failed!'
             echo '🔍 Check the logs above for errors'
+            echo ''
+            echo '📋 Debug commands:'
+            echo '  cat logs/booking-service.log'
+            echo '  cat logs/payment-service.log'
+            echo '  docker logs mongo'
+            echo '  docker logs kafka'
+        }
+        
+        always {
+            echo '🧹 Cleaning up...'
+            sh '''
+                # Kill background services
+                kill $(cat logs/*.pid 2>/dev/null) 2>/dev/null || true
+                rm -f logs/*.pid 2>/dev/null || true
+            '''
         }
     }
 }
