@@ -74,7 +74,7 @@ pipeline {
                     
                     echo ""
                     echo "Checking Kafka..."
-                    docker exec kafka kafka-topics --list --bootstrap-server localhost:9092 || echo "⚠️ Kafka not ready"
+                    docker exec kafka /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092 || echo "⚠️ Kafka not ready"
                 '''
             }
         }
@@ -86,17 +86,17 @@ pipeline {
                     cd saga-poc
                     
                     echo "Creating booking-events topic..."
-                    docker exec kafka kafka-topics --create --topic booking-events \
+                    docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --topic booking-events \
                         --bootstrap-server localhost:9092 \
                         --partitions 3 --replication-factor 1 || echo "Topic may already exist"
                     
                     echo "Creating payment-events topic..."
-                    docker exec kafka kafka-topics --create --topic payment-events \
+                    docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --topic payment-events \
                         --bootstrap-server localhost:9092 \
                         --partitions 3 --replication-factor 1 || echo "Topic may already exist"
                     
                     echo "Available topics:"
-                    docker exec kafka kafka-topics --list --bootstrap-server localhost:9092
+                    docker exec kafka /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
                 '''
             }
         }
@@ -142,16 +142,13 @@ pipeline {
                 echo '🏥 Running health checks...'
                 sh '''
                     echo "Checking Booking Service..."
-                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/api/bookings || echo "000")
-                    echo "Booking Service: $HTTP_CODE"
+                    curl -s -o /dev/null -w "Booking Service: %{http_code}\n" http://localhost:3001/api/bookings || echo "❌ Booking service not ready"
                     
                     echo "Checking Payment Service..."
-                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3002/api/payments || echo "000")
-                    echo "Payment Service: $HTTP_CODE"
+                    curl -s -o /dev/null -w "Payment Service: %{http_code}\n" http://localhost:3002/api/payments || echo "❌ Payment service not ready"
                     
                     echo "Checking MongoDB UI..."
-                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081 || echo "000")
-                    echo "MongoDB UI: $HTTP_CODE"
+                    curl -s -o /dev/null -w "MongoDB UI: %{http_code}\n" http://localhost:8081 || echo "❌ MongoDB UI not ready"
                 '''
             }
         }
@@ -200,10 +197,6 @@ pipeline {
                 sh '''
                     echo "Running containers:"
                     docker ps
-                    echo ""
-                    echo "Docker Compose logs (last 10 lines):"
-                    cd saga-poc
-                    docker-compose logs --tail=10
                 '''
             }
         }
