@@ -1,0 +1,13 @@
+{
+  "name": "saga-poc",
+  "version": "1.0.0",
+  "description": "Saga Pattern POC with Kafka KRaft and MongoDB",
+  "scripts": {
+    "init-topics": "node init-topics.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "kafkajs": "^2.2.4"
+  }
+}
