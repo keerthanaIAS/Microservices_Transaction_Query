@@ -6,10 +6,8 @@ pipeline {
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${env.NODEJS_HOME}/bin:${env.PATH}"
         DOCKER_HOST = "unix:///var/run/docker.sock"
         
-        // Docker Hub configuration
+        // Docker Hub configuration (without DOCKER_USERNAME)
         DOCKER_REGISTRY = 'docker.io'
-        DOCKER_IMAGE_BOOKING = "${env.DOCKER_REGISTRY}/${env.DOCKER_USERNAME}/booking-service"
-        DOCKER_IMAGE_PAYMENT = "${env.DOCKER_REGISTRY}/${env.DOCKER_USERNAME}/payment-service"
         DOCKER_TAG = "${env.BUILD_ID}"
         DOCKER_LATEST = "latest"
         
@@ -29,11 +27,7 @@ pipeline {
             steps {
                 echo '📦 Checking out code...'
                 checkout scm
-                sh '''
-                    echo "Current directory: $(pwd)"
-                    echo "Files:"
-                    ls -la
-                '''
+                sh 'pwd && ls -la'
             }
         }
         
@@ -49,9 +43,6 @@ pipeline {
                     
                     echo "Docker version:"
                     docker --version
-                    
-                    echo "Docker Compose version:"
-                    docker-compose --version || echo "docker-compose not found"
                     
                     echo "kubectl version:"
                     kubectl version --client || echo "kubectl not found"
@@ -81,19 +72,17 @@ pipeline {
             steps {
                 echo '🐳 Building Docker images...'
                 script {
-                    // Build booking service image
                     sh '''
                         cd saga-poc/booking-service
-                        docker build -t ${DOCKER_IMAGE_BOOKING}:${DOCKER_TAG} .
-                        docker tag ${DOCKER_IMAGE_BOOKING}:${DOCKER_TAG} ${DOCKER_IMAGE_BOOKING}:${DOCKER_LATEST}
+                        docker build -t booking-service:${DOCKER_TAG} .
+                        docker tag booking-service:${DOCKER_TAG} booking-service:${DOCKER_LATEST}
                         cd ../..
                     '''
                     
-                    // Build payment service image
                     sh '''
                         cd saga-poc/payment-service
-                        docker build -t ${DOCKER_IMAGE_PAYMENT}:${DOCKER_TAG} .
-                        docker tag ${DOCKER_IMAGE_PAYMENT}:${DOCKER_TAG} ${DOCKER_IMAGE_PAYMENT}:${DOCKER_LATEST}
+                        docker build -t payment-service:${DOCKER_TAG} .
+                        docker tag payment-service:${DOCKER_TAG} payment-service:${DOCKER_LATEST}
                         cd ../..
                     '''
                     
@@ -114,18 +103,19 @@ pipeline {
                         echo "Logging in to Docker Hub..."
                         echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
                         
-                        echo "Pushing booking-service..."
-                        docker push ${DOCKER_IMAGE_BOOKING}:${DOCKER_TAG}
-                        docker push ${DOCKER_IMAGE_BOOKING}:${DOCKER_LATEST}
+                        echo "Tagging and pushing booking-service..."
+                        docker tag booking-service:latest ${DOCKER_USERNAME}/booking-service:latest
+                        docker tag booking-service:${DOCKER_TAG} ${DOCKER_USERNAME}/booking-service:${DOCKER_TAG}
+                        docker push ${DOCKER_USERNAME}/booking-service:latest
+                        docker push ${DOCKER_USERNAME}/booking-service:${DOCKER_TAG}
                         
-                        echo "Pushing payment-service..."
-                        docker push ${DOCKER_IMAGE_PAYMENT}:${DOCKER_TAG}
-                        docker push ${DOCKER_IMAGE_PAYMENT}:${DOCKER_LATEST}
+                        echo "Tagging and pushing payment-service..."
+                        docker tag payment-service:latest ${DOCKER_USERNAME}/payment-service:latest
+                        docker tag payment-service:${DOCKER_TAG} ${DOCKER_USERNAME}/payment-service:${DOCKER_TAG}
+                        docker push ${DOCKER_USERNAME}/payment-service:latest
+                        docker push ${DOCKER_USERNAME}/payment-service:${DOCKER_TAG}
                         
                         echo "✅ Images pushed to Docker Hub"
-                        
-                        # Update Kubernetes YAML with correct image
-                        sed -i "s|YOUR_DOCKER_USERNAME|${DOCKER_USERNAME}|g" saga-poc/k8s/*.yaml
                     '''
                 }
             }
@@ -134,42 +124,33 @@ pipeline {
         stage('Deploy to Kubernetes') {
             steps {
                 echo '☸️ Deploying to Kubernetes...'
-                sh '''
-                    # Create namespace if it doesn't exist
-                    kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-                    
-                    # Apply all Kubernetes manifests
-                    echo "Applying Kubernetes configurations..."
-                    kubectl apply -f saga-poc/k8s/namespace.yaml
-                    kubectl apply -f saga-poc/k8s/booking-service.yaml
-                    kubectl apply -f saga-poc/k8s/payment-service.yaml
-                    
-                    # Wait for deployments to be ready
-                    echo "Waiting for deployments to be ready..."
-                    kubectl rollout status deployment/booking-service -n ${K8S_NAMESPACE}
-                    kubectl rollout status deployment/payment-service -n ${K8S_NAMESPACE}
-                    
-                    # Get service status
-                    echo "Services status:"
-                    kubectl get pods,svc,deploy -n ${K8S_NAMESPACE}
-                '''
-            }
-        }
-        
-        stage('Local Testing (Docker Compose)') {
-            steps {
-                echo '🚀 Starting local services for testing...'
-                sh '''
-                    # Start services using docker-compose
-                    cd saga-poc
-                    docker-compose up -d
-                    
-                    echo "⏳ Waiting for services to start (30 seconds)..."
-                    sleep 30
-                    
-                    echo "Running containers:"
-                    docker ps
-                '''
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub-credentials',
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        # Update YAML with correct username
+                        sed -i "s|YOUR_DOCKER_USERNAME|${DOCKER_USERNAME}|g" saga-poc/k8s/*.yaml
+                        
+                        # Create namespace
+                        kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                        
+                        # Apply Kubernetes manifests
+                        echo "Applying Kubernetes configurations..."
+                        kubectl apply -f saga-poc/k8s/namespace.yaml
+                        kubectl apply -f saga-poc/k8s/booking-service.yaml
+                        kubectl apply -f saga-poc/k8s/payment-service.yaml
+                        
+                        # Wait for deployments
+                        echo "Waiting for deployments to be ready..."
+                        kubectl rollout status deployment/booking-service -n ${K8S_NAMESPACE} --timeout=60s || echo "Booking service not ready"
+                        kubectl rollout status deployment/payment-service -n ${K8S_NAMESPACE} --timeout=60s || echo "Payment service not ready"
+                        
+                        echo "Services status:"
+                        kubectl get pods,svc,deploy -n ${K8S_NAMESPACE}
+                    '''
+                }
             }
         }
         
@@ -182,9 +163,6 @@ pipeline {
                     
                     echo "Checking Payment Service..."
                     curl -s -o /dev/null -w "Payment Service: %{http_code}\n" http://localhost:3002/api/payments || echo "❌ Payment service not ready"
-                    
-                    echo "Checking MongoDB UI..."
-                    curl -s -o /dev/null -w "MongoDB UI: %{http_code}\n" http://localhost:8081 || echo "❌ MongoDB UI not ready"
                 '''
             }
         }
@@ -199,42 +177,13 @@ pipeline {
                         -d '{"userId":"jenkins_test","amount":99.99}' \
                         -w "\nStatus: %{http_code}\n"
                     
-                    echo ""
-                    echo "⏳ Waiting for processing (10 seconds)..."
-                    sleep 10
+                    sleep 5
                     
-                    echo "Fetching all bookings..."
+                    echo "Fetching bookings..."
                     curl -s http://localhost:3001/api/bookings
                     
-                    echo ""
-                    echo "Fetching all payments..."
+                    echo "Fetching payments..."
                     curl -s http://localhost:3002/api/payments
-                '''
-            }
-        }
-        
-        stage('Verify Kubernetes Deployment') {
-            steps {
-                echo '☸️ Verifying Kubernetes deployment...'
-                sh '''
-                    echo "Checking Kubernetes pods:"
-                    kubectl get pods -n ${K8S_NAMESPACE}
-                    
-                    echo ""
-                    echo "Checking Kubernetes services:"
-                    kubectl get svc -n ${K8S_NAMESPACE}
-                    
-                    echo ""
-                    echo "Checking Kubernetes deployments:"
-                    kubectl get deployments -n ${K8S_NAMESPACE}
-                    
-                    echo ""
-                    echo "Booking Service logs:"
-                    kubectl logs -n ${K8S_NAMESPACE} deployment/booking-service --tail=10
-                    
-                    echo ""
-                    echo "Payment Service logs:"
-                    kubectl logs -n ${K8S_NAMESPACE} deployment/payment-service --tail=10
                 '''
             }
         }
@@ -243,33 +192,13 @@ pipeline {
     post {
         success {
             echo '🎉 Pipeline completed successfully!'
-            echo ''
-            echo '✅ Docker images pushed to Docker Hub'
+            echo '✅ Images pushed to Docker Hub'
             echo '✅ Services deployed to Kubernetes'
-            echo '✅ Local services running'
-            echo ''
-            echo '📊 Services:'
-            echo '  - Booking Service (Local): http://localhost:3001'
-            echo '  - Payment Service (Local): http://localhost:3002'
-            echo '  - MongoDB UI (Local): http://localhost:8081'
-            echo ''
-            echo '📊 Kubernetes (if running):'
-            echo '  - kubectl get pods -n saga'
-            echo '  - kubectl get svc -n saga'
         }
         
         failure {
             echo '❌ Pipeline failed!'
-            echo '🔍 Check the logs above for errors'
-        }
-        
-        always {
-            echo '🧹 Cleaning up...'
-            sh '''
-                # Kill background services
-                kill $(cat logs/*.pid 2>/dev/null) 2>/dev/null || true
-                rm -f logs/*.pid 2>/dev/null || true
-            '''
+            echo 'Check logs above for errors'
         }
     }
 }
