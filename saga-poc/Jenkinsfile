@@ -5,9 +5,7 @@ pipeline {
         NODEJS_HOME = tool name: 'NodeJS-18', type: 'nodejs'
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${env.NODEJS_HOME}/bin:${env.PATH}"
         DOCKER_HOST = "unix:///var/run/docker.sock"
-        DOCKER_REGISTRY = 'docker.io'
         DOCKER_TAG = "${env.BUILD_ID}"
-        DOCKER_LATEST = "latest"
     }
     
     options {
@@ -21,21 +19,13 @@ pipeline {
             steps {
                 echo '📦 Checking out code...'
                 checkout scm
-                sh 'pwd && ls -la'
             }
         }
         
         stage('Setup Environment') {
             steps {
-                echo '🔧 Setting up environment...'
                 sh '''
-                    echo "Node.js version:"
                     node --version
-                    
-                    echo "npm version:"
-                    npm --version
-                    
-                    echo "Docker version:"
                     docker --version
                 '''
             }
@@ -43,151 +33,89 @@ pipeline {
         
         stage('Install Dependencies') {
             steps {
-                echo '📦 Installing dependencies...'
                 sh '''
                     mkdir -p logs
-                    cd saga-poc
-                    
-                    echo "Installing booking-service dependencies..."
-                    cd booking-service && npm install && cd ..
-                    
-                    echo "Installing payment-service dependencies..."
-                    cd payment-service && npm install && cd ..
-                    
-                    echo "✅ Dependencies installed"
+                    cd saga-poc/booking-service && npm install
+                    cd ../payment-service && npm install
                 '''
             }
         }
         
         stage('Build Docker Images') {
             steps {
-                echo '🐳 Building Docker images...'
                 sh '''
                     cd saga-poc/booking-service
                     docker build -t booking-service:${DOCKER_TAG} .
-                    docker tag booking-service:${DOCKER_TAG} booking-service:${DOCKER_LATEST}
+                    docker tag booking-service:${DOCKER_TAG} booking-service:latest
                     cd ../..
                     
                     cd saga-poc/payment-service
                     docker build -t payment-service:${DOCKER_TAG} .
-                    docker tag payment-service:${DOCKER_TAG} payment-service:${DOCKER_LATEST}
+                    docker tag payment-service:${DOCKER_TAG} payment-service:latest
                     cd ../..
-                    
-                    echo "✅ Docker images built successfully"
                 '''
             }
         }
         
         stage('Push to Docker Hub') {
             steps {
-                echo '📤 Pushing images to Docker Hub...'
                 withCredentials([usernamePassword(
                     credentialsId: 'docker-hub-credentials',
                     usernameVariable: 'DOCKER_USERNAME',
                     passwordVariable: 'DOCKER_PASSWORD'
                 )]) {
                     sh '''
-                        echo "Logging in to Docker Hub..."
                         echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
                         
-                        echo "Tagging and pushing booking-service..."
                         docker tag booking-service:latest ${DOCKER_USERNAME}/booking-service:latest
                         docker tag booking-service:${DOCKER_TAG} ${DOCKER_USERNAME}/booking-service:${DOCKER_TAG}
                         docker push ${DOCKER_USERNAME}/booking-service:latest
                         docker push ${DOCKER_USERNAME}/booking-service:${DOCKER_TAG}
                         
-                        echo "Tagging and pushing payment-service..."
                         docker tag payment-service:latest ${DOCKER_USERNAME}/payment-service:latest
                         docker tag payment-service:${DOCKER_TAG} ${DOCKER_USERNAME}/payment-service:${DOCKER_TAG}
                         docker push ${DOCKER_USERNAME}/payment-service:latest
                         docker push ${DOCKER_USERNAME}/payment-service:${DOCKER_TAG}
-                        
-                        echo "✅ Images pushed to Docker Hub!"
-                        echo ""
-                        echo "📦 Your images are available at:"
-                        echo "  - https://hub.docker.com/r/${DOCKER_USERNAME}/booking-service"
-                        echo "  - https://hub.docker.com/r/${DOCKER_USERNAME}/payment-service"
                     '''
                 }
             }
         }
         
-        stage('Start Local Services') {
+        stage('Start Services') {
             steps {
-                echo '🚀 Starting local services...'
                 sh '''
                     cd saga-poc
                     
-                    # Start Docker infrastructure
-                    echo "Starting Docker infrastructure..."
+                    # Start Docker
                     docker-compose up -d
-                    
-                    echo "⏳ Waiting for Docker services (20 seconds)..."
                     sleep 20
                     
-                    # Start booking service
-                    echo "Starting Booking Service on port 3001..."
+                    # Start Node services with logs directory
+                    mkdir -p logs
+                    
                     cd booking-service
                     nohup npm start > ../logs/booking-service.log 2>&1 &
-                    echo $! > ../logs/booking-service.pid
                     cd ..
                     
-                    # Start payment service
-                    echo "Starting Payment Service on port 3002..."
                     cd payment-service
                     nohup npm start > ../logs/payment-service.log 2>&1 &
-                    echo $! > ../logs/payment-service.pid
                     cd ..
                     
-                    echo "⏳ Waiting for services to start (30 seconds)..."
                     sleep 30
-                    
-                    echo "Running containers:"
-                    docker ps
-                    
-                    echo ""
-                    echo "Node processes:"
-                    ps aux | grep node | grep -v grep || echo "No node processes"
                 '''
             }
         }
         
-        stage('Health Check') {
+        stage('Test') {
             steps {
-                echo '🏥 Running health checks...'
                 sh '''
-                    echo "Checking Booking Service..."
-                    curl -s -o /dev/null -w "Booking Service: %{http_code}\n" http://localhost:3001/api/bookings || echo "❌ Booking service not ready"
+                    curl -s -o /dev/null -w "Booking: %{http_code}\n" http://localhost:3001/api/bookings || echo "Booking not ready"
+                    curl -s -o /dev/null -w "Payment: %{http_code}\n" http://localhost:3002/api/payments || echo "Payment not ready"
                     
-                    echo "Checking Payment Service..."
-                    curl -s -o /dev/null -w "Payment Service: %{http_code}\n" http://localhost:3002/api/payments || echo "❌ Payment service not ready"
-                    
-                    echo "Checking MongoDB UI..."
-                    curl -s -o /dev/null -w "MongoDB UI: %{http_code}\n" http://localhost:8081 || echo "❌ MongoDB UI not ready"
-                '''
-            }
-        }
-        
-        stage('Smoke Test') {
-            steps {
-                echo '🧪 Running smoke test...'
-                sh '''
                     echo "Creating test booking..."
                     curl -X POST http://localhost:3001/api/bookings \
                         -H "Content-Type: application/json" \
-                        -d '{"userId":"jenkins_test","amount":99.99}' \
-                        -w "\nStatus: %{http_code}\n"
-                    
-                    echo ""
-                    echo "⏳ Waiting for processing (10 seconds)..."
-                    sleep 10
-                    
-                    echo "Fetching all bookings..."
-                    curl -s http://localhost:3001/api/bookings
-                    
-                    echo ""
-                    echo "Fetching all payments..."
-                    curl -s http://localhost:3002/api/payments
+                        -d '{"userId":"test","amount":99.99}'
                 '''
             }
         }
@@ -195,29 +123,14 @@ pipeline {
     
     post {
         success {
-            echo '🎉 Pipeline completed successfully!'
-            echo ''
-            echo '✅ Docker images pushed to Docker Hub:'
-            echo '  - keerthanalp/booking-service:latest'
-            echo '  - keerthanalp/payment-service:latest'
-            echo ''
-            echo '✅ Local services running:'
-            echo '  - Booking Service: http://localhost:3001'
-            echo '  - Payment Service: http://localhost:3002'
-            echo '  - MongoDB UI: http://localhost:8081'
-            echo ''
-            echo '📝 Test commands:'
-            echo '  curl http://localhost:3001/api/bookings'
-            echo '  curl http://localhost:3002/api/payments'
+            echo '🎉 Pipeline SUCCESS! Images pushed to Docker Hub!'
+            echo '📦 https://hub.docker.com/r/keerthanalp/booking-service'
+            echo '📦 https://hub.docker.com/r/keerthanalp/payment-service'
         }
-        
         failure {
             echo '❌ Pipeline failed!'
-            echo 'Check logs above for errors'
         }
-        
         always {
-            echo '🧹 Cleaning up...'
             sh '''
                 kill $(cat logs/*.pid 2>/dev/null) 2>/dev/null || true
                 rm -f logs/*.pid 2>/dev/null || true
