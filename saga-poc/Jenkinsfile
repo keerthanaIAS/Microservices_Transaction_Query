@@ -27,6 +27,7 @@ pipeline {
                 sh '''
                     node --version
                     docker --version
+                    kubectl version --client || echo "kubectl not found"
                 '''
             }
         }
@@ -77,8 +78,37 @@ pipeline {
                         docker push ${DOCKER_USERNAME}/payment-service:${DOCKER_TAG}
                         
                         echo "✅ Images pushed to Docker Hub!"
-                        echo "📦 https://hub.docker.com/r/${DOCKER_USERNAME}/booking-service"
-                        echo "📦 https://hub.docker.com/r/${DOCKER_USERNAME}/payment-service"
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            steps {
+                echo '☸️ Deploying to Kubernetes...'
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub-credentials',
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        # Ensure namespace exists
+                        kubectl create namespace saga --dry-run=client -o yaml | kubectl apply -f -
+                        
+                        # Deploy services
+                        kubectl apply -f saga-poc/booking-service/k8s/booking-service.yaml
+                        kubectl apply -f saga-poc/payment-service/k8s/payment-service.yaml
+                        
+                        # Wait for deployments to be ready
+                        echo "⏳ Waiting for booking-service..."
+                        kubectl rollout status deployment/booking-service -n saga --timeout=120s || echo "Booking service not ready"
+                        
+                        echo "⏳ Waiting for payment-service..."
+                        kubectl rollout status deployment/payment-service -n saga --timeout=120s || echo "Payment service not ready"
+                        
+                        # Show status
+                        echo "📊 Deployment Status:"
+                        kubectl get pods,svc,deploy -n saga
                     '''
                 }
             }
@@ -87,10 +117,17 @@ pipeline {
     
     post {
         success {
-            echo '🎉 Pipeline SUCCESS! Images pushed to Docker Hub!'
+            echo '🎉 Pipeline SUCCESS!'
+            echo '✅ Images pushed to Docker Hub'
+            echo '✅ Deployed to Kubernetes'
+            echo ''
+            echo '📊 To access services:'
+            echo '  kubectl port-forward -n saga svc/booking-service 3001:3001'
+            echo '  kubectl port-forward -n saga svc/payment-service 3002:3002'
         }
         failure {
             echo '❌ Pipeline failed!'
+            echo 'Check logs above for details'
         }
     }
 }
